@@ -13,7 +13,7 @@ export default function Welcome() {
   const navigate = useNavigate();
 
   return (
-    <div className="flex items-center justify-center bg-gradient-to-br from-stone-50 to-stone-100 p-4">
+    <div className="flex items-center justify-center p-4">
       <Card className="w-full max-w-md shadow-xl">
         <CardHeader className="text-center space-y-4">
           <div className="flex justify-center">

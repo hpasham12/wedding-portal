@@ -2,7 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 
 export default function Dashboard() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-stone-50 to-stone-100 p-4">
+    <div className="p-4">
       <div className="max-w-6xl mx-auto py-8">
         <Card>
           <CardHeader>

@@ -90,7 +90,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50 text-stone-900">
+    <div className="text-stone-900">
       {/* Navigation / Header */}
       <header className="bg-white border-b border-stone-200 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-4 flex justify-between items-center">

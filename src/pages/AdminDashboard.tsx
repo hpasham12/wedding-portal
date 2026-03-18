@@ -29,6 +29,12 @@ interface AccessRecord {
   event_id: string;
 }
 
+interface RSVPRecord {
+  guest_id: string;
+  event_id: string;
+  status: 'attending' | 'declined';
+}
+
 export default function AdminDashboard() {
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -72,10 +78,11 @@ export default function AdminDashboard() {
   const [eventDescription, setEventDescription] = useState('');
   const [creatingEvent, setCreatingEvent] = useState(false);
 
-  // --- State: Access ---
+  // --- State: Access & RSVPs ---
   const [accessRecords, setAccessRecords] = useState<AccessRecord[]>([]);
+  const [rsvps, setRsvps] = useState<RSVPRecord[]>([]);
   const [selectedEventId, setSelectedEventId] = useState<string>('');
-  const [togglingAccess, setTogglingAccess] = useState<string | null>(null); // tracks guest_id being updated
+  const [togglingAccess, setTogglingAccess] = useState<string | null>(null);
 
   // --- Fetch Data ---
   const fetchData = async () => {
@@ -108,6 +115,12 @@ export default function AdminDashboard() {
       .from('access')
       .select('guest_id, event_id');
     if (accessData) setAccessRecords(accessData);
+
+    // Fetch RSVPs
+    const { data: rsvpData } = await supabaseAdmin
+      .from('rsvps')
+      .select('guest_id, event_id, status');
+    if (rsvpData) setRsvps(rsvpData);
   };
 
   useEffect(() => {
@@ -162,7 +175,6 @@ export default function AdminDashboard() {
     setTogglingAccess(guestId);
 
     if (hasAccess) {
-      // Revoke access
       const { error } = await supabaseAdmin
         .from('access')
         .delete()
@@ -174,7 +186,6 @@ export default function AdminDashboard() {
         toast({ variant: "destructive", title: "Error revoking access", description: error.message });
       }
     } else {
-      // Grant access
       const { error } = await supabaseAdmin
         .from('access')
         .insert([{ guest_id: guestId, event_id: eventId }]);
@@ -188,11 +199,20 @@ export default function AdminDashboard() {
     setTogglingAccess(null);
   };
 
+  // --- Derived Data for Selected Event ---
+  const invitedGuests = guests.filter(g => accessRecords.some(a => a.guest_id === g.id && a.event_id === selectedEventId));
+  const attendingCount = invitedGuests.filter(g => rsvps.some(r => r.guest_id === g.id && r.event_id === selectedEventId && r.status === 'attending')).length;
+  const declinedCount = invitedGuests.filter(g => rsvps.some(r => r.guest_id === g.id && r.event_id === selectedEventId && r.status === 'declined')).length;
+  const pendingCount = invitedGuests.length - attendingCount - declinedCount;
+
   return (
     <div className="text-stone-900">
       <header className="bg-white border-b border-stone-200 sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-serif font-medium">Our Wedding</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-serif font-medium">Our Wedding</h1>
+            <span className="bg-stone-800 text-stone-100 text-xs px-2 py-1 rounded-full uppercase tracking-wider font-bold">Admin</span>
+          </div>
           <div className="flex items-center gap-4">
             <Button variant="outline" size="sm" onClick={() => navigate('/dashboard')}>
               Back to Dashboard
@@ -204,171 +224,203 @@ export default function AdminDashboard() {
         </div>
       </header>
 
-    <div className="p-4 md:p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <div>
-          <h1 className="text-3xl font-serif text-stone-900">Admin Dashboard</h1>
-          <p className="text-stone-600 mt-2">Manage guests, events, and invitations.</p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          
-          {/* LEFT COLUMN: Creation Forms */}
-          <div className="space-y-8">
-            {/* Create Guest Form */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Add New Guest</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleCreateGuest} className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Full Name</label>
-                    <Input placeholder="e.g. Jane Doe" value={fullName} onChange={(e) => setFullName(e.target.value)} required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Email Address</label>
-                    <Input type="email" placeholder="jane@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Unique Passcode</label>
-                    <div className="flex gap-2">
-                      <Input type="text" placeholder="Passcode" value={passcode} onChange={(e) => setPasscode(e.target.value)} required />
-                      <Button type="button" variant="outline" onClick={generatePasscode}>Generate</Button>
-                    </div>
-                  </div>
-                  <Button type="submit" className="w-full" disabled={creatingGuest}>
-                    {creatingGuest ? 'Creating...' : 'Create Guest'}
-                  </Button>
-                </form>
-              </CardContent>
-            </Card>
-
-            {/* Create Event Form */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Create Event</CardTitle>
-                <CardDescription>Add a new event to the wedding schedule.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleCreateEvent} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Event Name</label>
-                      <Input placeholder="Rehearsal Dinner" value={eventName} onChange={(e) => setEventName(e.target.value)} required />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Date & Time</label>
-                      <Input type="datetime-local" value={eventDate} onChange={(e) => setEventDate(e.target.value)} required />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Location</label>
-                    <Input placeholder="123 Venue St, City, ST" value={eventLocation} onChange={(e) => setEventLocation(e.target.value)} required />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Description (Optional)</label>
-                    <Input placeholder="Join us for drinks..." value={eventDescription} onChange={(e) => setEventDescription(e.target.value)} />
-                  </div>
-                  <Button type="submit" className="w-full" disabled={creatingEvent}>
-                    {creatingEvent ? 'Creating...' : 'Create Event'}
-                  </Button>
-                </form>
-              </CardContent>
-            </Card>
+      <div className="p-4 md:p-8">
+        <div className="max-w-6xl mx-auto space-y-8">
+          <div>
+            <h1 className="text-3xl font-serif text-stone-900">Admin Dashboard</h1>
+            <p className="text-stone-600 mt-2">Manage guests, events, and track RSVPs.</p>
           </div>
 
-          {/* RIGHT COLUMN: Management & Assignment */}
-          <div className="space-y-8">
-            {/* Access Management */}
-            <Card className="border-stone-800 bg-stone-900 text-stone-50">
-              <CardHeader>
-                <CardTitle className="text-stone-50">Manage Invitations</CardTitle>
-                <CardDescription className="text-stone-400">Select an event to assign guests to it.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {events.length === 0 ? (
-                  <p className="text-sm text-stone-400">Create an event first to assign guests.</p>
-                ) : (
-                  <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            
+            {/* LEFT COLUMN: Creation Forms */}
+            <div className="space-y-8">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Add New Guest</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleCreateGuest} className="space-y-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-stone-300">Select Event</label>
-                      <select 
-                        className="w-full p-2 rounded-md bg-stone-800 border border-stone-700 text-stone-50 focus:ring-2 focus:ring-stone-400"
-                        value={selectedEventId}
-                        onChange={(e) => setSelectedEventId(e.target.value)}
-                      >
-                        {events.map(event => (
-                          <option key={event.id} value={event.id}>{event.name}</option>
-                        ))}
-                      </select>
+                      <label className="text-sm font-medium">Full Name</label>
+                      <Input placeholder="e.g. Jane Doe" value={fullName} onChange={(e) => setFullName(e.target.value)} required />
                     </div>
-
-                    <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                      <label className="text-sm font-medium text-stone-300">Invited Guests</label>
-                      {guests.map(guest => {
-                        const hasAccess = accessRecords.some(a => a.guest_id === guest.id && a.event_id === selectedEventId);
-                        const isUpdating = togglingAccess === guest.id;
-                        
-                        return (
-                          <div key={guest.id} className="flex items-center space-x-3 bg-stone-800 p-3 rounded-md">
-                            <input 
-                              type="checkbox"
-                              id={`guest-${guest.id}`}
-                              checked={hasAccess}
-                              onChange={() => handleToggleAccess(guest.id, selectedEventId, hasAccess)}
-                              disabled={isUpdating}
-                              className="w-4 h-4 rounded text-stone-900 focus:ring-stone-500"
-                            />
-                            <label htmlFor={`guest-${guest.id}`} className="text-sm font-medium leading-none cursor-pointer flex-1">
-                              {guest.full_name}
-                              <span className="block text-xs text-stone-400 mt-1">{guest.email}</span>
-                            </label>
-                            {isUpdating && <span className="text-xs text-stone-400 animate-pulse">Saving...</span>}
-                          </div>
-                        );
-                      })}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Email Address</label>
+                      <Input type="email" placeholder="jane@example.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
                     </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Unique Passcode</label>
+                      <div className="flex gap-2">
+                        <Input type="text" placeholder="Passcode" value={passcode} onChange={(e) => setPasscode(e.target.value)} required />
+                        <Button type="button" variant="outline" onClick={generatePasscode}>Generate</Button>
+                      </div>
+                    </div>
+                    <Button type="submit" className="w-full" disabled={creatingGuest}>
+                      {creatingGuest ? 'Creating...' : 'Create Guest'}
+                    </Button>
+                  </form>
+                </CardContent>
+              </Card>
 
-            {/* Guest List Summary */}
-            <Card>
-              <CardHeader>
-                <CardTitle>All Guests</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {loadingGuests ? (
-                  <p className="text-stone-500 text-sm">Loading guests...</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                      <thead className="text-xs text-stone-500 uppercase bg-stone-100 border-b">
-                        <tr>
-                          <th className="px-4 py-3 font-medium">Name</th>
-                          <th className="px-4 py-3 font-medium">Passcode</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {guests.map((guest) => (
-                          <tr key={guest.id} className="border-b last:border-0">
-                            <td className="px-4 py-3 font-medium text-stone-900">{guest.full_name}</td>
-                            <td className="px-4 py-3 font-mono text-stone-600">{guest.passcode}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Create Event</CardTitle>
+                  <CardDescription>Add a new event to the wedding schedule.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleCreateEvent} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Event Name</label>
+                        <Input placeholder="Rehearsal Dinner" value={eventName} onChange={(e) => setEventName(e.target.value)} required />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Date & Time</label>
+                        <Input type="datetime-local" value={eventDate} onChange={(e) => setEventDate(e.target.value)} required />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Location</label>
+                      <Input placeholder="123 Venue St, City, ST" value={eventLocation} onChange={(e) => setEventLocation(e.target.value)} required />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Description (Optional)</label>
+                      <Input placeholder="Join us for drinks..." value={eventDescription} onChange={(e) => setEventDescription(e.target.value)} />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={creatingEvent}>
+                      {creatingEvent ? 'Creating...' : 'Create Event'}
+                    </Button>
+                  </form>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* RIGHT COLUMN: Management & Assignment */}
+            <div className="space-y-8">
+              
+              {/* Event Selector & Access Management */}
+              <Card className="border-stone-800 bg-stone-900 text-stone-50">
+                <CardHeader>
+                  <CardTitle className="text-stone-50">Manage Invitations</CardTitle>
+                  <CardDescription className="text-stone-400">Select an event to assign guests and view RSVPs.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {events.length === 0 ? (
+                    <p className="text-sm text-stone-400">Create an event first.</p>
+                  ) : (
+                    <div className="space-y-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-stone-300">Select Event Context</label>
+                        <select 
+                          className="w-full p-2 rounded-md bg-stone-800 border border-stone-700 text-stone-50 focus:ring-2 focus:ring-stone-400"
+                          value={selectedEventId}
+                          onChange={(e) => setSelectedEventId(e.target.value)}
+                        >
+                          {events.map(event => (
+                            <option key={event.id} value={event.id}>{event.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-3 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar border-t border-stone-800 pt-4">
+                        <label className="text-sm font-medium text-stone-300">Grant Access</label>
+                        {guests.map(guest => {
+                          const hasAccess = accessRecords.some(a => a.guest_id === guest.id && a.event_id === selectedEventId);
+                          const isUpdating = togglingAccess === guest.id;
+                          
+                          return (
+                            <div key={guest.id} className="flex items-center space-x-3 bg-stone-800 p-2 rounded-md hover:bg-stone-700 transition-colors">
+                              <input 
+                                type="checkbox"
+                                id={`guest-${guest.id}`}
+                                checked={hasAccess}
+                                onChange={() => handleToggleAccess(guest.id, selectedEventId, hasAccess)}
+                                disabled={isUpdating}
+                                className="w-4 h-4 rounded text-stone-900 focus:ring-stone-500"
+                              />
+                              <label htmlFor={`guest-${guest.id}`} className="text-sm font-medium leading-none cursor-pointer flex-1 py-1">
+                                {guest.full_name}
+                              </label>
+                              {isUpdating && <span className="text-xs text-stone-400 animate-pulse">Saving...</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* NEW: RSVP Overview Card */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>RSVP Overview</CardTitle>
+                  <CardDescription>
+                    Status for the currently selected event above.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {!selectedEventId ? (
+                    <p className="text-sm text-stone-500">Select an event to see RSVPs.</p>
+                  ) : invitedGuests.length === 0 ? (
+                    <p className="text-sm text-stone-500">No guests have been invited to this event yet.</p>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* Metric blocks */}
+                      <div className="grid grid-cols-4 gap-2 text-center border-b border-stone-100 pb-4">
+                        <div className="bg-stone-100 p-2 rounded-md">
+                          <p className="text-2xl font-serif text-stone-900">{invitedGuests.length}</p>
+                          <p className="text-xs text-stone-500 uppercase font-bold mt-1">Invited</p>
+                        </div>
+                        <div className="bg-green-100 p-2 rounded-md">
+                          <p className="text-2xl font-serif text-green-900">{attendingCount}</p>
+                          <p className="text-xs text-green-700 uppercase font-bold mt-1">Yes</p>
+                        </div>
+                        <div className="bg-stone-200 p-2 rounded-md">
+                          <p className="text-2xl font-serif text-stone-600">{declinedCount}</p>
+                          <p className="text-xs text-stone-500 uppercase font-bold mt-1">No</p>
+                        </div>
+                        <div className="border border-dashed border-stone-200 p-2 rounded-md">
+                          <p className="text-2xl font-serif text-stone-400">{pendingCount}</p>
+                          <p className="text-xs text-stone-400 uppercase font-bold mt-1">Pending</p>
+                        </div>
+                      </div>
+
+                      {/* Guest Status List */}
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                        {invitedGuests.map(guest => {
+                          const rsvp = rsvps.find(r => r.guest_id === guest.id && r.event_id === selectedEventId);
+                          let statusColor = "bg-stone-100 text-stone-500";
+                          let statusText = "Pending";
+
+                          if (rsvp?.status === 'attending') {
+                            statusColor = "bg-green-100 text-green-800";
+                            statusText = "Attending";
+                          } else if (rsvp?.status === 'declined') {
+                            statusColor = "bg-stone-200 text-stone-700";
+                            statusText = "Declined";
+                          }
+
+                          return (
+                            <div key={guest.id} className="flex justify-between items-center py-2 border-b border-stone-100 last:border-0">
+                              <span className="text-sm font-medium text-stone-800">{guest.full_name}</span>
+                              <span className={`text-xs px-2 py-1 rounded-full font-medium ${statusColor}`}>
+                                {statusText}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+            </div>
           </div>
-          
         </div>
       </div>
-    </div>
     </div>
   );
 }

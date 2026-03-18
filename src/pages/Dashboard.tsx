@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase'; // Make sure this is the NORMAL client, not the admin one!
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { supabase } from '@/lib/supabase';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, MapPin } from 'lucide-react'; // Assuming you use lucide-react for icons
+import { useToast } from '@/hooks/use-toast';
+import { CalendarDays, MapPin, CheckCircle2, XCircle } from 'lucide-react';
 
 // --- Types ---
 interface WeddingEvent {
@@ -15,6 +16,7 @@ interface WeddingEvent {
 }
 
 interface GuestProfile {
+  id: string;
   full_name: string;
   is_admin: boolean;
 }
@@ -22,8 +24,12 @@ interface GuestProfile {
 export default function Dashboard() {
   const [events, setEvents] = useState<WeddingEvent[]>([]);
   const [profile, setProfile] = useState<GuestProfile | null>(null);
+  const [rsvps, setRsvps] = useState<Record<string, string>>({}); // Maps event_id -> status
   const [loading, setLoading] = useState(true);
+  const [updatingRsvp, setUpdatingRsvp] = useState<string | null>(null); // Tracks which event is currently saving
+  
   const navigate = useNavigate();
+  const { toast } = useToast();
 
   useEffect(() => {
     const fetchDashboardData = async () => {
@@ -40,14 +46,13 @@ export default function Dashboard() {
       // 2. Fetch the guest's profile name
       const { data: profileData } = await supabase
         .from('guests')
-        .select('full_name, is_admin')
+        .select('id, full_name, is_admin')
         .eq('id', userId)
         .single();
         
       if (profileData) setProfile(profileData);
 
       // 3. Fetch ONLY the events this guest has access to
-      // We query the 'access' table and use Supabase's foreign key joining to grab the linked event details
       const { data: accessData, error: accessError } = await supabase
         .from('access')
         .select(`
@@ -61,14 +66,24 @@ export default function Dashboard() {
         `);
 
       if (!accessError && accessData) {
-        // The data comes back nested like [{ events: { id: 1, name: '...' } }]. 
-        // We map it to flatten it into a simple array of events.
-        // @ts-ignore - Supabase types can be tricky with joins, so we force the mapping
+        // @ts-ignore - Flattening the join response
         const formattedEvents = accessData.map(record => record.events).filter(Boolean) as WeddingEvent[];
-        
-        // Sort events by date
         formattedEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         setEvents(formattedEvents);
+      }
+
+      // 4. Fetch the guest's existing RSVPs
+      const { data: rsvpData } = await supabase
+        .from('rsvps')
+        .select('event_id, status')
+        .eq('guest_id', userId);
+
+      if (rsvpData) {
+        // Convert array of RSVPs into an easy lookup object: { "event_id_123": "attending" }
+        const rsvpMap = rsvpData.reduce((acc, curr) => {
+          return { ...acc, [curr.event_id]: curr.status };
+        }, {});
+        setRsvps(rsvpMap);
       }
 
       setLoading(false);
@@ -76,6 +91,39 @@ export default function Dashboard() {
 
     fetchDashboardData();
   }, [navigate]);
+
+  const handleRSVP = async (eventId: string, status: 'attending' | 'declined') => {
+    if (!profile?.id) return;
+    setUpdatingRsvp(eventId);
+
+    // Upsert will insert a new row if one doesn't exist, or update it if it does
+    // It uses the UNIQUE(guest_id, event_id) constraint you set up in your migration
+    const { error } = await supabase
+      .from('rsvps')
+      .upsert({
+        guest_id: profile.id,
+        event_id: eventId,
+        status: status,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'guest_id, event_id' });
+
+    if (error) {
+      toast({
+        variant: "destructive",
+        title: "Error saving RSVP",
+        description: "Please try again or contact the couple.",
+      });
+    } else {
+      // Instantly update the UI to reflect the new choice
+      setRsvps(prev => ({ ...prev, [eventId]: status }));
+      toast({
+        title: status === 'attending' ? "Can't wait to see you!" : "We'll miss you!",
+        description: "Your RSVP has been safely recorded.",
+      });
+    }
+    
+    setUpdatingRsvp(null);
+  };
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -119,7 +167,7 @@ export default function Dashboard() {
         <div>
           <h2 className="text-3xl md:text-4xl font-serif mb-2">Your Itinerary</h2>
           <p className="text-stone-600">
-            We are so excited to celebrate with you! Here are the events you are invited to.
+            We are so excited to celebrate with you! Please let us know if you can make it to the events below.
           </p>
         </div>
 
@@ -133,42 +181,75 @@ export default function Dashboard() {
           </Card>
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {events.map((event) => (
-              <Card key={event.id} className="flex flex-col h-full hover:shadow-md transition-shadow">
-                <CardHeader>
-                  <CardTitle className="font-serif text-xl">{event.name}</CardTitle>
-                </CardHeader>
-                <CardContent className="flex-1 space-y-4">
-                  <div className="space-y-2 text-sm text-stone-600">
-                    <div className="flex items-start gap-2">
-                      <CalendarDays className="w-4 h-4 mt-0.5 shrink-0" />
-                      <span>
-                        {new Date(event.date).toLocaleDateString('en-US', {
-                          weekday: 'long',
-                          month: 'long',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit'
-                        })}
-                      </span>
+            {events.map((event) => {
+              const currentStatus = rsvps[event.id];
+              const isUpdating = updatingRsvp === event.id;
+
+              return (
+                <Card key={event.id} className="flex flex-col h-full hover:shadow-md transition-shadow">
+                  <CardHeader>
+                    <CardTitle className="font-serif text-xl">{event.name}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex-1 space-y-4">
+                    <div className="space-y-2 text-sm text-stone-600">
+                      <div className="flex items-start gap-2">
+                        <CalendarDays className="w-4 h-4 mt-0.5 shrink-0" />
+                        <span>
+                          {new Date(event.date).toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            month: 'long',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit'
+                          })}
+                        </span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <MapPin className="w-4 h-4 mt-0.5 shrink-0" />
+                        <span>{event.location}</span>
+                      </div>
                     </div>
-                    <div className="flex items-start gap-2">
-                      <MapPin className="w-4 h-4 mt-0.5 shrink-0" />
-                      <span>{event.location}</span>
-                    </div>
-                  </div>
+                    
+                    {event.description && (
+                      <p className="text-sm text-stone-700 pt-2 border-t border-stone-100">
+                        {event.description}
+                      </p>
+                    )}
+                  </CardContent>
                   
-                  {event.description && (
-                    <p className="text-sm text-stone-700 pt-2 border-t border-stone-100">
-                      {event.description}
+                  {/* RSVP Section */}
+                  <CardFooter className="flex flex-col gap-3 pt-4 border-t border-stone-100 bg-stone-50/50 rounded-b-xl">
+                    <p className="text-sm font-medium w-full text-center text-stone-700">
+                      Will you be attending?
                     </p>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
+                    <div className="grid grid-cols-2 gap-2 w-full">
+                      <Button
+                        variant={currentStatus === 'attending' ? 'default' : 'outline'}
+                        className={`w-full ${currentStatus === 'attending' ? 'bg-green-700 hover:bg-green-800 text-white' : ''}`}
+                        onClick={() => handleRSVP(event.id, 'attending')}
+                        disabled={isUpdating}
+                      >
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                        Yes
+                      </Button>
+                      
+                      <Button
+                        variant={currentStatus === 'declined' ? 'default' : 'outline'}
+                        className={`w-full ${currentStatus === 'declined' ? 'bg-stone-800 hover:bg-stone-900 text-white' : ''}`}
+                        onClick={() => handleRSVP(event.id, 'declined')}
+                        disabled={isUpdating}
+                      >
+                        <XCircle className="w-4 h-4 mr-2" />
+                        No
+                      </Button>
+                    </div>
+                  </CardFooter>
+                </Card>
+              );
+            })}
           </div>
         )}
       </main>
     </div>
   );
-} 
+}

@@ -16,6 +16,7 @@ interface WeddingEvent {
 
 interface GuestProfile {
   full_name: string;
+  is_admin: boolean;
 }
 
 export default function Dashboard() {
@@ -39,7 +40,7 @@ export default function Dashboard() {
       // 2. Fetch the guest's profile name
       const { data: profileData } = await supabase
         .from('guests')
-        .select('full_name')
+        .select('full_name, is_admin')
         .eq('id', userId)
         .single();
         
@@ -83,7 +84,7 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-stone-50">
+      <div className="flex items-center justify-center">
         <p className="text-stone-500 animate-pulse">Loading your itinerary...</p>
       </div>
     );
@@ -101,6 +102,11 @@ export default function Dashboard() {
             <span className="text-sm text-stone-600 hidden md:inline-block">
               Welcome, {profile?.full_name}
             </span>
+            {profile?.is_admin && (
+              <Button variant="outline" size="sm" onClick={() => navigate('/admin-dashboard')}>
+                Admin Dashboard
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handleSignOut}>
               Sign Out
             </Button>

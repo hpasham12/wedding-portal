@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { CalendarDays, MapPin, CheckCircle2, XCircle } from 'lucide-react';
+import { CalendarDays, MapPin, CheckCircle2, XCircle, ArrowRight } from 'lucide-react';
 
 // --- Types ---
 interface WeddingEvent {
@@ -19,23 +19,33 @@ interface GuestProfile {
   id: string;
   full_name: string;
   is_admin: boolean;
+  group_id: string | null;
+}
+
+interface GroupMember {
+  id: string;
+  full_name: string;
 }
 
 export default function Dashboard() {
   const [events, setEvents] = useState<WeddingEvent[]>([]);
   const [profile, setProfile] = useState<GuestProfile | null>(null);
-  const [rsvps, setRsvps] = useState<Record<string, string>>({}); // Maps event_id -> status
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  // rsvps[guestId][eventId] = status
+  const [rsvps, setRsvps] = useState<Record<string, Record<string, string>>>({});
+  // groupMemberEventIds[guestId] = Set of event IDs they have access to
+  const [groupMemberEventIds, setGroupMemberEventIds] = useState<Record<string, Set<string>>>({});
   const [loading, setLoading] = useState(true);
-  const [updatingRsvp, setUpdatingRsvp] = useState<string | null>(null); // Tracks which event is currently saving
-  
+  // tracks in-progress upserts by key `${guestId}-${eventId}`
+  const [updatingRsvp, setUpdatingRsvp] = useState<Set<string>>(new Set());
+
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     const fetchDashboardData = async () => {
-      // 1. Get current logged-in user
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
+
       if (sessionError || !session) {
         navigate('/login');
         return;
@@ -43,46 +53,74 @@ export default function Dashboard() {
 
       const userId = session.user.id;
 
-      // 2. Fetch the guest's profile name
+      // 1. Fetch profile (including group_id)
       const { data: profileData } = await supabase
         .from('guests')
-        .select('id, full_name, is_admin')
+        .select('id, full_name, is_admin, group_id')
         .eq('id', userId)
         .single();
-        
+
       if (profileData) setProfile(profileData);
 
-      // 3. Fetch ONLY the events this guest has access to
+      // 2. Fetch events this guest has access to (explicit filter to avoid picking up group members' records)
       const { data: accessData, error: accessError } = await supabase
         .from('access')
-        .select(`
-          events (
-            id,
-            name,
-            date,
-            location,
-            description
-          )
-        `);
-
-      if (!accessError && accessData) {
-        // @ts-ignore - Flattening the join response
-        const formattedEvents = accessData.map(record => record.events).filter(Boolean) as WeddingEvent[];
-        formattedEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        setEvents(formattedEvents);
-      }
-
-      // 4. Fetch the guest's existing RSVPs
-      const { data: rsvpData } = await supabase
-        .from('rsvps')
-        .select('event_id, status')
+        .select('events ( id, name, date, location, description )')
         .eq('guest_id', userId);
 
+      let fetchedEvents: WeddingEvent[] = [];
+      if (!accessError && accessData) {
+        // @ts-ignore
+        fetchedEvents = accessData.map(r => r.events).filter(Boolean) as WeddingEvent[];
+        fetchedEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        setEvents(fetchedEvents);
+      }
+
+      // 3. Fetch group members and their event access (if in a group)
+      let members: GroupMember[] = [];
+      const memberEventMap: Record<string, Set<string>> = {};
+
+      if (profileData?.group_id) {
+        const { data: membersData } = await supabase
+          .from('guests')
+          .select('id, full_name')
+          .eq('group_id', profileData.group_id)
+          .neq('id', userId);
+
+        if (membersData && membersData.length > 0) {
+          members = membersData;
+
+          const memberIds = membersData.map(m => m.id);
+          const { data: memberAccessData } = await supabase
+            .from('access')
+            .select('guest_id, event_id')
+            .in('guest_id', memberIds);
+
+          if (memberAccessData) {
+            memberAccessData.forEach(a => {
+              if (!memberEventMap[a.guest_id]) memberEventMap[a.guest_id] = new Set();
+              memberEventMap[a.guest_id].add(a.event_id);
+            });
+          }
+        }
+      }
+
+      setGroupMembers(members);
+      setGroupMemberEventIds(memberEventMap);
+
+      // 4. Fetch RSVPs for self and all group members
+      const allGuestIds = [userId, ...members.map(m => m.id)];
+      const { data: rsvpData } = await supabase
+        .from('rsvps')
+        .select('guest_id, event_id, status')
+        .in('guest_id', allGuestIds);
+
       if (rsvpData) {
-        // Convert array of RSVPs into an easy lookup object: { "event_id_123": "attending" }
-        const rsvpMap = rsvpData.reduce((acc, curr) => {
-          return { ...acc, [curr.event_id]: curr.status };
-        }, {});
+        const rsvpMap: Record<string, Record<string, string>> = {};
+        rsvpData.forEach(r => {
+          if (!rsvpMap[r.guest_id]) rsvpMap[r.guest_id] = {};
+          rsvpMap[r.guest_id][r.event_id] = r.status;
+        });
         setRsvps(rsvpMap);
       }
 
@@ -92,37 +130,35 @@ export default function Dashboard() {
     fetchDashboardData();
   }, [navigate]);
 
-  const handleRSVP = async (eventId: string, status: 'attending' | 'declined') => {
-    if (!profile?.id) return;
-    setUpdatingRsvp(eventId);
+  const handleRSVP = async (guestId: string, eventId: string, status: 'attending' | 'declined') => {
+    const key = `${guestId}-${eventId}`;
+    setUpdatingRsvp(prev => new Set([...prev, key]));
 
-    // Upsert will insert a new row if one doesn't exist, or update it if it does
-    // It uses the UNIQUE(guest_id, event_id) constraint you set up in your migration
     const { error } = await supabase
       .from('rsvps')
-      .upsert({
-        guest_id: profile.id,
-        event_id: eventId,
-        status: status,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'guest_id, event_id' });
+      .upsert(
+        { guest_id: guestId, event_id: eventId, status, updated_at: new Date().toISOString() },
+        { onConflict: 'guest_id, event_id' }
+      );
 
     if (error) {
-      toast({
-        variant: "destructive",
-        title: "Error saving RSVP",
-        description: "Please try again or contact the couple.",
-      });
+      toast({ variant: 'destructive', title: 'Error saving RSVP', description: 'Please try again or contact the couple.' });
     } else {
-      // Instantly update the UI to reflect the new choice
-      setRsvps(prev => ({ ...prev, [eventId]: status }));
+      setRsvps(prev => ({
+        ...prev,
+        [guestId]: { ...(prev[guestId] ?? {}), [eventId]: status },
+      }));
       toast({
         title: status === 'attending' ? "Can't wait to see you!" : "We'll miss you!",
-        description: "Your RSVP has been safely recorded.",
+        description: 'Your RSVP has been safely recorded.',
       });
     }
-    
-    setUpdatingRsvp(null);
+
+    setUpdatingRsvp(prev => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   };
 
   const handleSignOut = async () => {
@@ -182,8 +218,15 @@ export default function Dashboard() {
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {events.map((event) => {
-              const currentStatus = rsvps[event.id];
-              const isUpdating = updatingRsvp === event.id;
+              // Group members who also have access to this event
+              const membersForEvent = groupMembers.filter(
+                m => groupMemberEventIds[m.id]?.has(event.id)
+              );
+
+              // All people whose RSVP we show: current user first, then group members
+              const rsvpPersons = profile
+                ? [{ id: profile.id, full_name: profile.full_name }, ...membersForEvent]
+                : membersForEvent;
 
               return (
                 <Card key={event.id} className="flex flex-col h-full hover:shadow-md transition-shadow">
@@ -209,40 +252,67 @@ export default function Dashboard() {
                         <span>{event.location}</span>
                       </div>
                     </div>
-                    
+
                     {event.description && (
                       <p className="text-sm text-stone-700 pt-2 border-t border-stone-100">
                         {event.description}
                       </p>
                     )}
                   </CardContent>
-                  
-                  {/* RSVP Section */}
+
+                  {/* View Details Link */}
+                  <CardContent className="pt-0">
+                    <Button
+                      variant="link"
+                      className="p-0 h-auto text-stone-600 hover:text-stone-900"
+                      onClick={() => navigate(`/event/${event.id}`)}
+                    >
+                      View Details <ArrowRight className="w-4 h-4 ml-1" />
+                    </Button>
+                  </CardContent>
+
+                  {/* RSVP Section — one row per person */}
                   <CardFooter className="flex flex-col gap-3 pt-4 border-t border-stone-100 bg-stone-50/50 rounded-b-xl">
-                    <p className="text-sm font-medium w-full text-center text-stone-700">
-                      Will you be attending?
-                    </p>
-                    <div className="grid grid-cols-2 gap-2 w-full">
-                      <Button
-                        variant={currentStatus === 'attending' ? 'default' : 'outline'}
-                        className={`w-full ${currentStatus === 'attending' ? 'bg-green-700 hover:bg-green-800 text-white' : ''}`}
-                        onClick={() => handleRSVP(event.id, 'attending')}
-                        disabled={isUpdating}
-                      >
-                        <CheckCircle2 className="w-4 h-4 mr-2" />
-                        Yes
-                      </Button>
-                      
-                      <Button
-                        variant={currentStatus === 'declined' ? 'default' : 'outline'}
-                        className={`w-full ${currentStatus === 'declined' ? 'bg-stone-800 hover:bg-stone-900 text-white' : ''}`}
-                        onClick={() => handleRSVP(event.id, 'declined')}
-                        disabled={isUpdating}
-                      >
-                        <XCircle className="w-4 h-4 mr-2" />
-                        No
-                      </Button>
-                    </div>
+                    {rsvpPersons.map((person, idx) => {
+                      const currentStatus = rsvps[person.id]?.[event.id];
+                      const isUpdating = updatingRsvp.has(`${person.id}-${event.id}`);
+
+                      return (
+                        <div key={person.id} className="w-full space-y-1">
+                          {rsvpPersons.length > 1 && (
+                            <p className="text-xs font-medium text-stone-500 truncate">
+                              {person.full_name}
+                              {idx === 0 && ' (you)'}
+                            </p>
+                          )}
+                          {idx === 0 && rsvpPersons.length === 1 && (
+                            <p className="text-sm font-medium w-full text-center text-stone-700">
+                              Will you be attending?
+                            </p>
+                          )}
+                          <div className="grid grid-cols-2 gap-2 w-full">
+                            <Button
+                              variant={currentStatus === 'attending' ? 'default' : 'outline'}
+                              className={`w-full ${currentStatus === 'attending' ? 'bg-green-700 hover:bg-green-800 text-white' : ''}`}
+                              onClick={() => handleRSVP(person.id, event.id, 'attending')}
+                              disabled={isUpdating}
+                            >
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              Yes
+                            </Button>
+                            <Button
+                              variant={currentStatus === 'declined' ? 'default' : 'outline'}
+                              className={`w-full ${currentStatus === 'declined' ? 'bg-stone-800 hover:bg-stone-900 text-white' : ''}`}
+                              onClick={() => handleRSVP(person.id, event.id, 'declined')}
+                              disabled={isUpdating}
+                            >
+                              <XCircle className="w-4 h-4 mr-2" />
+                              No
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </CardFooter>
                 </Card>
               );

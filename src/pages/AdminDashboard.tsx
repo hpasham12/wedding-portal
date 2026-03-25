@@ -7,6 +7,8 @@ import { AddGuestForm } from '@/components/admin/AddGuestForm';
 import { CreateEventForm } from '@/components/admin/CreateEventForm';
 import { ManageInvitations } from '@/components/admin/ManageInvitations';
 import { RSVPOverview } from '@/components/admin/RSVPOverview';
+import { ManageEventDetails } from '@/components/admin/ManageEventDetails';
+import { ManageGuestGroups } from '@/components/admin/ManageGuestGroups';
 import type { Guest, WeddingEvent, AccessRecord, RSVPRecord } from '@/types/admin';
 
 export default function AdminDashboard() {
@@ -86,11 +88,16 @@ export default function AdminDashboard() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="space-y-8">
-              <AddGuestForm onGuestCreated={fetchData} />
+              <AddGuestForm guests={guests} onGuestCreated={fetchData} />
+              <ManageGuestGroups guests={guests} onGroupsChanged={fetchData} />
               <CreateEventForm onEventCreated={fetchData} />
             </div>
 
             <div className="space-y-8">
+              <ManageEventDetails
+                events={events}
+                onEventUpdated={fetchData}
+              />
               <ManageInvitations
                 guests={guests}
                 events={events}

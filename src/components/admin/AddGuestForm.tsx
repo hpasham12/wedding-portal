@@ -4,16 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import type { Guest } from '@/types/admin';
 
 interface AddGuestFormProps {
+  guests: Guest[];
   onGuestCreated: () => void;
 }
 
-export function AddGuestForm({ onGuestCreated }: AddGuestFormProps) {
+export function AddGuestForm({ guests, onGuestCreated }: AddGuestFormProps) {
   const { toast } = useToast();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [passcode, setPasscode] = useState('');
+  const [linkToGuestId, setLinkToGuestId] = useState('');
   const [creating, setCreating] = useState(false);
 
   const generatePasscode = () => setPasscode(Math.random().toString(36).slice(-6).toUpperCase());
@@ -22,7 +25,7 @@ export function AddGuestForm({ onGuestCreated }: AddGuestFormProps) {
     e.preventDefault();
     setCreating(true);
 
-    const { error } = await supabaseAdmin.auth.admin.createUser({
+    const { data, error } = await supabaseAdmin.auth.admin.createUser({
       email,
       password: passcode,
       email_confirm: true,
@@ -31,14 +34,49 @@ export function AddGuestForm({ onGuestCreated }: AddGuestFormProps) {
 
     if (error) {
       toast({ variant: 'destructive', title: 'Error', description: error.message });
-    } else {
-      toast({ title: 'Guest created!', description: `${fullName} added.` });
-      setFullName('');
-      setEmail('');
-      setPasscode('');
-      onGuestCreated();
+      setCreating(false);
+      return;
     }
+
+    if (linkToGuestId && data.user) {
+      const newUserId = data.user.id;
+
+      // Find the target guest's current group
+      const targetGuest = guests.find(g => g.id === linkToGuestId);
+      let groupId: string | null = targetGuest?.group_id ?? null;
+
+      if (!groupId) {
+        // Neither guest is in a group yet — create a new group
+        const { data: newGroup, error: groupError } = await supabaseAdmin
+          .from('guest_groups')
+          .insert({})
+          .select()
+          .single();
+
+        if (groupError || !newGroup) {
+          toast({ variant: 'destructive', title: 'Guest created but could not link', description: groupError?.message });
+          setCreating(false);
+          onGuestCreated();
+          return;
+        }
+
+        groupId = newGroup.id;
+
+        // Add the target guest to the new group
+        await supabaseAdmin.from('guests').update({ group_id: groupId }).eq('id', linkToGuestId);
+      }
+
+      // Add the new guest to the group
+      await supabaseAdmin.from('guests').update({ group_id: groupId }).eq('id', newUserId);
+    }
+
+    toast({ title: 'Guest created!', description: `${fullName} added.` });
+    setFullName('');
+    setEmail('');
+    setPasscode('');
+    setLinkToGuestId('');
     setCreating(false);
+    onGuestCreated();
   };
 
   return (
@@ -63,6 +101,24 @@ export function AddGuestForm({ onGuestCreated }: AddGuestFormProps) {
               <Button type="button" variant="outline" onClick={generatePasscode}>Generate</Button>
             </div>
           </div>
+          {guests.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Link to Family Group <span className="text-stone-400 font-normal">(optional)</span></label>
+              <select
+                className="w-full border border-stone-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-400"
+                value={linkToGuestId}
+                onChange={(e) => setLinkToGuestId(e.target.value)}
+              >
+                <option value="">None</option>
+                {guests.map(g => (
+                  <option key={g.id} value={g.id}>{g.full_name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-stone-500">
+                This guest will be able to RSVP on behalf of the linked guest, and vice versa.
+              </p>
+            </div>
+          )}
           <Button type="submit" className="w-full" disabled={creating}>
             {creating ? 'Creating...' : 'Create Guest'}
           </Button>

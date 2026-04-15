@@ -81,7 +81,7 @@ export function RSVPOverview({ guests, accessRecords, rsvps, selectedEventId }: 
             </div>
 
             <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
-              {displayGroups.map((group, i) => (
+              {displayGroups.map((group) => (
                 <div key={group.groupId ?? group.members[0].id}>
                   {group.members.length > 1 && (
                     <p className="text-xs text-stone-400 uppercase font-bold mb-1 tracking-wide">
